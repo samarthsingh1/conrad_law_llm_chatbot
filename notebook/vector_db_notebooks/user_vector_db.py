@@ -5,7 +5,7 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 
 # Adjust this if your path is different
 BASE_DIR = Path("/notebook")
-FAISS_STORE_DIR = BASE_DIR / "vectorstores" / "cuad_contracts_faiss"
+FAISS_STORE_DIR = BASE_DIR / "vectorstores" / "user_contracts_faiss"
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 

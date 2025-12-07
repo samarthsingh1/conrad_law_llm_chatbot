@@ -23,7 +23,7 @@ EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Groq LLM model + API KEY (hardcoded as you requested)
 LLM_MODEL = "llama-3.3-70b-versatile"
-GROQ_API_KEY = "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"
+GROQ_API_KEY = "ADD_API_KEY"
 
 # Tracks current uploaded contract
 CURRENT_UPLOADED_CONTRACT = None

@@ -1,30 +1,60 @@
-# --- LangChain ecosystem ---
-langchain==0.2.12
-langchain-community==0.2.10
+# -----------------------------
+# Core data handling
+# -----------------------------
+datasets==3.0.1
+pandas==2.2.3        # highest vs 2.2.2
+numpy==1.26.4
+tqdm==4.66.5         # highest vs 4.66.3
+
+# -----------------------------
+# NLP preprocessing
+# -----------------------------
+nltk==3.9.1
+regex==2024.9.11
+
+# -----------------------------
+# Embeddings & retrieval
+# -----------------------------
+faiss-cpu==1.9.0     # conflicts with 1.7.4
+langchain==0.2.12            # replaces 0.0.208
+langchain-community==0.2.10  # replaces 0.0.21
 langchain-core==0.2.18
 langchain-text-splitters==0.2.2
 langchain-huggingface==0.1.1
-langchain-groq==0.1.3
+langchain-groq==0.1.3        # explicit version instead of bare "langchain_groq"
 langsmith
 
-# --- Vector DB / Embeddings ---
-faiss-cpu==1.7.4
-sentence-transformers==2.6.1
-transformers==4.41.2
+sentence-transformers==3.1.1  # highest vs 2.6.1
 
-# --- PDF processing ---
-pypdf==4.2.0
+scikit-learn==1.5.2
 
-# --- Chainlit UI ---
+# -----------------------------
+# Text generation / LLMs
+# -----------------------------
+transformers==4.45.2          # replaces 4.41.2
+torch==2.4.1                  # replaces 2.1.2
+torchvision==0.16.2           # still compatible for image tasks
+torchaudio==2.1.2             # no conflict
+
+accelerate==1.1.1
+safetensors==0.4.5
+
+# -----------------------------
+# Text extraction
+# -----------------------------
+pdfplumber==0.11.4
+pypdf==5.0.1                  # replaces 4.2.0
+
+# -----------------------------
+# UI / Visualization
+# -----------------------------
+streamlit==1.39.0
+plotly==5.24.1
 chainlit==1.1.203
 
-# --- Supporting libraries ---
-numpy==1.26.4
-pandas==2.2.2
-tqdm==4.66.3
+# -----------------------------
+# Evaluation & utilities
+# -----------------------------
+evaluate==0.4.3
+rouge-score==0.1.2
 python-dotenv==1.0.1
-
-# --- PyTorch (CPU/MPS compatible for M1 Macs) ---
-torch==2.1.2
-torchvision==0.16.2
-torchaudio==2.1.2

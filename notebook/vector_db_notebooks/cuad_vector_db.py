@@ -45,29 +45,35 @@ def process_data(dataset):
     Flatten CUAD train split into:
       - all_contracts: list of contexts (full contract text)
       - all_qas: list of dicts with question, answer, context, etc.
+
+    IMPORTANT:
+    The 'train' split contains multiple items, one per question type
+    (Exclusivity, Indemnification, etc.). We must iterate over ALL of them,
+    not just dataset['train'][0].
     """
-    train_item = dataset["train"][0]  # the single outer wrapper
     all_contracts = []
     all_qas = []
 
-    for entry in train_item["data"]:
-        for para in entry["paragraphs"]:
-            context = para["context"]
-            all_contracts.append(context)
+    # 🔹 Iterate over ALL train items (each is a question family)
+    for train_item in dataset["train"]:
+        for entry in train_item["data"]:
+            for para in entry["paragraphs"]:
+                context = para["context"]
+                all_contracts.append(context)
 
-            for qa in para["qas"]:
-                answer_text = qa["answers"][0]["text"] if qa["answers"] else ""
-                answer_start = qa["answers"][0]["answer_start"] if qa["answers"] else -1
+                for qa in para["qas"]:
+                    answer_text = qa["answers"][0]["text"] if qa["answers"] else ""
+                    answer_start = qa["answers"][0]["answer_start"] if qa["answers"] else -1
 
-                all_qas.append(
-                    {
-                        "question": qa["question"],
-                        "answer": answer_text,
-                        "answer_start": answer_start,
-                        "context": context,
-                        "id": qa["id"],
-                    }
-                )
+                    all_qas.append(
+                        {
+                            "question": qa["question"],
+                            "answer": answer_text,
+                            "answer_start": answer_start,
+                            "context": context,
+                            "id": qa["id"],
+                        }
+                    )
 
     return all_contracts, all_qas
 
@@ -79,26 +85,33 @@ def process_data(dataset):
 def build_qa_vector_store(all_qas):
     """
     Build a FAISS vector store where:
-      - page_content = QUESTION (used for similarity search)
-      - metadata = {answer, context, qa_id, answer_start}
-
-    This must match what src/rag_backend.py expects when it formats CUAD docs.
+      - page_content = "Question: ...\\nAnswer: ..."
+        (this is what gets embedded for similarity search)
+      - metadata = {question, answer, context, qa_id, answer_start}
+        (used later for prompt formatting)
     """
     print(f"Building CUAD QA vector store from {len(all_qas)} QA pairs...")
 
-    # 1) Texts to embed = questions only
-    texts = [qa["question"] for qa in all_qas]
+    texts = []
+    metadatas = []
 
-    # 2) Metadata carries answer + context for later use
-    metadatas = [
-        {
-            "qa_id": qa["id"],
-            "answer": qa["answer"],
-            "context": qa["context"],
-            "answer_start": qa["answer_start"],
-        }
-        for qa in all_qas
-    ]
+    for qa in all_qas:
+        question_text = qa["question"] or ""
+        answer_text = qa["answer"] or ""
+
+        # 🔹 This combined string is what FAISS will embed & compare to user queries
+        combined = f"Question: {question_text}\nAnswer: {answer_text}"
+
+        texts.append(combined)
+        metadatas.append(
+            {
+                "qa_id": qa["id"],
+                "question": question_text,
+                "answer": answer_text,
+                "context": qa["context"],
+                "answer_start": qa["answer_start"],
+            }
+        )
 
     embeddings = HuggingFaceEmbeddings(
         model_name=EMBED_MODEL,

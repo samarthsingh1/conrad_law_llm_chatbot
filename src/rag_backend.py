@@ -52,119 +52,53 @@ cuad_db = None     # FAISS index for CUAD QA pairs
 CURRENT_UPLOADED_CONTRACT = None
 
 
-# ============================================================
-#  CUAD DATA LOADING & PROCESSING (QA-BASED)
-# ============================================================
+def format_top_k_clauses(retrieved_docs, k=5):
+    """
+    Utility for Chainlit debugging.
+    Shows the top-k retrieved items with metadata,
+    and distinguishes between CUAD QA and user clauses.
+    """
+    if not retrieved_docs:
+        return " No retrieved items."
 
-# def read_cuad_data():
-#     """
-#     Load CUAD JSON files into a Hugging Face dataset.
-#     Expects files:
-#       - train_separate_questions.json
-#       - CUADv1.json
-#       - test.json
-#     under CUAD_DATA_DIR.
-#     """
-#     base_path = CUAD_DATA_DIR
+    retrieved_docs = retrieved_docs[:k]
 
-#     dataset = load_dataset(
-#         "json",
-#         data_files={
-#             "train": str(base_path / "train_separate_questions.json"),
-#             "validation": str(base_path / "CUADv1.json"),
-#             "test": str(base_path / "test.json"),
-#         }
-#     )
-#     return dataset
+    md = "## 🔎 Top Retrieved Items\n\n"
 
+    for i, doc in enumerate(retrieved_docs, start=1):
+        meta = doc.metadata or {}
+        
+        # Identify source
+        if meta.get("contract_name"):
+            source = "USER CONTRACT"
+        else:
+            source = "CUAD QA"
 
-# def process_cuad_data(dataset):
-#     """
-#     Flatten CUAD train split into:
-#       - all_contracts: list of full contract texts (contexts)
-#       - all_qas: list of dicts with question, answer, context, etc.
+        # CUAD QA fields
+        q = doc.page_content
+        a = meta.get("answer", None)
+        ctx = meta.get("context", None)
 
-#     The CUAD 'train' split here is a single wrapper with a 'data' field.
-#     """
-#     train_item = dataset["train"][0]  # the single outer wrapper
-#     all_contracts = []
-#     all_qas = []
+        # User contract fields
+        clause_no = meta.get("clause_number", None)
 
-#     for entry in train_item["data"]:
-#         for para in entry["paragraphs"]:
-#             context = para["context"]
-#             all_contracts.append(context)
+        md += f"### Result {i}\n"
+        md += f"- **Source**: {source}\n"
 
-#             for qa in para["qas"]:
-#                 answer_text = qa["answers"][0]["text"] if qa["answers"] else ""
-#                 answer_start = qa["answers"][0]["answer_start"] if qa["answers"] else -1
+        if source == "USER CONTRACT":
+            md += f"- **Clause Number**: {clause_no}\n"
+            preview = doc.page_content[:200].replace("\n", " ")
+            md += f"- **Text Preview**: {preview}...\n\n"
 
-#                 all_qas.append(
-#                     {
-#                         "question": qa["question"],
-#                         "answer": answer_text,
-#                         "answer_start": answer_start,
-#                         "context": context,
-#                         "id": qa["id"],
-#                     }
-#                 )
+        else:  # CUAD QA
+            md += f"- **Question**: {q}\n"
+            if a:
+                md += f"- **Answer**: {a}\n"
+            if ctx:
+                md += f"- **Context (excerpt)**: {ctx[:200].replace('\n', ' ')}...\n"
+            md += "\n"
 
-#     return all_contracts, all_qas
-
-
-# def build_cuad_qa_vectorstore(save_to_disk: bool = True):
-#     """
-#     Build a FAISS vectorstore from CUAD QA pairs.
-
-#     IMPORTANT: Each document's *embedding* is based ONLY on the QUESTION
-#     (page_content = question). The ANSWER and CONTEXT are stored in metadata
-#     and are only used after retrieval, in the RAG prompt.
-#     """
-#     print("🧩 Building CUAD QA vectorstore from CUAD JSON...")
-#     dataset = read_cuad_data()
-#     _, all_qas = process_cuad_data(dataset)
-
-#     docs = []
-#     for qa in all_qas:
-#         question_text = qa["question"]  # used for similarity search
-
-#         docs.append(
-#             Document(
-#                 page_content=question_text,
-#                 metadata={
-#                     "qa_id": qa["id"],
-#                     "answer": qa["answer"],
-#                     "context": qa["context"],
-#                     "answer_start": qa["answer_start"],
-#                 }
-#             )
-#         )
-
-#     db = FAISS.from_documents(docs, embeddings)
-
-#     if save_to_disk:
-#         CUAD_FAISS_DIR.mkdir(parents=True, exist_ok=True)
-#         db.save_local(str(CUAD_FAISS_DIR))
-#         print(f"✅ Saved CUAD QA FAISS index to {CUAD_FAISS_DIR}")
-
-#     return db
-
-
-# ============================================================
-#  LOAD VECTOR DATABASES
-# ============================================================
-
-def load_user_db():
-    """Load the user-uploaded contract FAISS DB."""
-    global user_db
-    if user_db is None:
-        print("📂 Loading USER contract FAISS DB...")
-        user_db = FAISS.load_local(
-            folder_path=str(USER_FAISS_DIR),
-            embeddings=embeddings,
-            allow_dangerous_deserialization=True
-        )
-    return user_db
+    return md
 
 
 def load_cuad_db():
@@ -342,15 +276,19 @@ def format_cuad_docs(docs):
     if not docs:
         return "None"
 
+    MAX_CTX_CHARS = 1200  # <-- keep this small; adjust if needed
+
     lines = []
     for d in docs:
         q = d.page_content
         a = d.metadata.get("answer", "")
         ctx = d.metadata.get("context", "")
 
-        # Optional: truncate context if it's huge
-        # ctx_display = ctx[:1500] + ("..." if len(ctx) > 1500 else "")
-        ctx_display = ctx  # keep full for now
+        # 🔹 Truncate long contexts aggressively
+        if len(ctx) > MAX_CTX_CHARS:
+            ctx_display = ctx[:MAX_CTX_CHARS] + "... [truncated]"
+        else:
+            ctx_display = ctx
 
         lines.append(
             f"Question: {q}\n"
@@ -358,6 +296,7 @@ def format_cuad_docs(docs):
             f"Source contract excerpt:\n{ctx_display}"
         )
     return "\n\n---\n\n".join(lines)
+
 
 
 # ============================================================
@@ -368,35 +307,59 @@ def get_rag_chain():
     llm = _create_llm()
 
     prompt = ChatPromptTemplate.from_template("""
-You are a legal reasoning assistant.
+You are a careful legal reasoning assistant. You MUST base your answer ONLY on the context provided below.
 
-If the user asks about THEIR contract:
-- Only use CONTRACT CLAUSES (uploaded user contract) as ground truth.
-- Do NOT invent new terms or clauses that are not present in CONTRACT CLAUSES.
-
-If the user asks a general legal question:
-- Use KNOWLEDGE BASE Q&A PAIRS from the CUAD database.
-- Treat them as examples of how similar questions are answered in real contracts.
-- Clearly indicate that you are speaking about general legal practice, not the user's specific contract.
-
-If both CONTRACT CLAUSES and KNOWLEDGE BASE CLAUSES are "None":
-- Say you don't have enough information and ask the user to clarify or upload a contract.
-
----------------- CONTEXT ----------------
-CONTRACT CLAUSES:
+---------------- CONTRACT CONTEXT ----------------
+CONTRACT CLAUSES (User-uploaded contract):
 {contract_clauses}
 
-KNOWLEDGE BASE CLAUSES (CUAD Q&A):
+KNOWLEDGE BASE Q&A (CUAD dataset):
 {kb_clauses}
------------------------------------------
+--------------------------------------------------
 
-Question:
+User question:
 {question}
 
-Instructions:
-- First, state whether you are answering based on the user's contract or general CUAD legal knowledge.
-- Give a clear, structured answer.
-- When applicable, cite clause numbers and contract names for the user's contract, and refer to CUAD Q&A as examples.
+ROLE & CONTEXT USAGE
+- If the answer can be found in the user's CONTRACT CLAUSES (e.g., question mentions "my contract", "this agreement", "clause X", "section Y"):
+  - Treat CONTRACT CLAUSES as ground truth.
+  - Use CUAD Q&A only as background knowledge if absolutely needed, and clearly label it as "general practice", not binding on the user's contract.
+- If the question is a general legal question (not about a specific uploaded contract):
+  - Answer using CUAD Q&A as examples of how similar questions are answered in real contracts.
+  - DO NOT invent laws; stay within the patterns in CUAD.
+
+ANSWER FORMAT (VERY IMPORTANT)
+Always answer in **markdown** with the following structure:
+
+1. ## Answer summary
+   - 2–4 bullet points that give a concise, non-technical summary.
+2. ## Detailed explanation
+   - 2–5 short paragraphs explaining the concept in plain English.
+   - When explaining a term (e.g. "force majeure"), include:
+     - What it generally means.
+     - Typical conditions for it to apply.
+     - At least one simple real-world example.
+3. ## Relevant clauses / examples
+   - If using the user's contract:
+     - Bullet points like:
+       - **Clause 5.2 – Force Majeure:** [brief paraphrase]
+       - **Clause 9.1 – Termination for Force Majeure:** [brief paraphrase]
+   - If using CUAD Q&A:
+     - Bullet points like:
+       - **Example 1 (CUAD QA):** [short paraphrase of answer]
+       - **Contract excerpt:** [one-sentence summary of the context]
+4. ## Caveats
+   - 1–3 bullet points noting:
+     - That this is not formal legal advice.
+     - That exact rights and obligations depend on the full contract and jurisdiction.
+
+STYLE GUIDELINES
+- Use clear headings and bullet points.
+- Keep sentences medium length; avoid long, dense paragraphs.
+- Quote or paraphrase relevant clauses instead of copying huge blocks of text.
+- If information is missing in the context, say so explicitly instead of guessing.
+
+Now write the answer following the structure above.
 """)
 
     def prepare_context(q):
@@ -408,7 +371,6 @@ Instructions:
             "question": q
         }
 
-    # LangChain Expression Language (LCEL) chain
     return prepare_context | prompt | llm | StrOutputParser()
 
 

@@ -406,7 +406,53 @@ def _create_llm():
     )
 
 
+# ============================================================
+#  CONTEXT FORMATTING FOR RAG
+# ============================================================
 
+def format_contract_docs(docs):
+    if not docs:
+        return "None"
+
+    lines = []
+    for d in docs:
+        cname = d.metadata.get("contract_name", "User Contract")
+        cnum = d.metadata.get("clause_number", "N/A")
+        text = d.page_content.strip()
+        lines.append(f"[Contract: {cname} | Clause {cnum}]\n{text}")
+    return "\n\n---\n\n".join(lines)
+
+
+def format_cuad_docs(docs):
+    """
+    Format CUAD QA documents for the prompt.
+
+    Retrieval is done over "Question + Answer" embeddings,
+    but we display them using structured metadata.
+    """
+    if not docs:
+        return "None"
+
+    MAX_CTX_CHARS = 1200
+
+    lines = []
+    for d in docs:
+        meta = d.metadata or {}
+        q = meta.get("question") or d.page_content
+        a = meta.get("answer", "")
+        ctx = meta.get("context", "")
+
+        if len(ctx) > MAX_CTX_CHARS:
+            ctx_display = ctx[:MAX_CTX_CHARS] + "... [truncated]"
+        else:
+            ctx_display = ctx
+
+        lines.append(
+            f"Question: {q}\n"
+            f"Answer: {a}\n\n"
+            f"Source contract excerpt:\n{ctx_display}"
+        )
+    return "\n\n---\n\n".join(lines)
 
 def get_rag_chain():
     llm = _create_llm()
@@ -441,16 +487,13 @@ INSTRUCTIONS:
         ),
     ])
 
-    def prepare_context(q: str):
-        # Existing routing logic: sends to user_db if CONTRACT_KEYWORDS match, else CUAD.
+    def prepare_context(q):
         user_docs, kb_docs = retrieve_docs(q)
 
-        contract_text = "\n\n".join(d.page_content for d in user_docs) or "None"
-        kb_text = "\n\n".join(d.page_content for d in kb_docs) or "None"
-
         return {
-            "contract_clauses": contract_text,
-            "kb_clauses": kb_text,
-            "question": q,
+            "contract_clauses": format_contract_docs(user_docs),
+            "kb_clauses": format_cuad_docs(kb_docs),
+            "question": q
         }
+    return prepare_context | prompt | llm | StrOutputParser()
 

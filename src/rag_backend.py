@@ -1,6 +1,8 @@
 from pathlib import Path
 import re
 
+# -------- Prompts--------
+from prompts import *
 # -------- Vector DBs --------
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader
@@ -20,7 +22,7 @@ from langchain_core.output_parsers import StrOutputParser
 #  GLOBAL CONFIG
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parents[1] / "notebook"
+BASE_DIR = Path(__file__).resolve().parents[1] / "/Users/kanishkkaul/Desktop/NLP_Project/conrad_law_llm_chatbot/notebook"
 
 USER_FAISS_DIR = BASE_DIR / "vectorstores" / "user_contracts_faiss"
 CUAD_FAISS_DIR = BASE_DIR / "vectorstores" / "cuad_faiss_index"
@@ -28,7 +30,7 @@ CUAD_FAISS_DIR = BASE_DIR / "vectorstores" / "cuad_faiss_index"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 LLM_MODEL = "llama-3.3-70b-versatile"
-GROQ_API_KEY = "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"  # replace with your real key
+GROQ_API_KEY = "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"  # replace with your real key
 
 # ============================================================
 #  GLOBAL STATE
@@ -212,41 +214,52 @@ def _create_llm():
     )
 
 
-# ============================================================
-#  RAG CHAIN
-# ============================================================
+
 
 def get_rag_chain():
     llm = _create_llm()
+    # 4) COMBINED PROMPT
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", global_system_prompt),
+        ("system", user_vector_db_prompt),
+        ("system", cuad_vector_db_prompt),
+        (
+            "human",
+            """You are now answering a single user question.
 
-    prompt = ChatPromptTemplate.from_template("""
-You are a legal reasoning assistant.
-
-If the user asks about THEIR contract:
-- Only use CONTRACT CLAUSES (these are the uploaded PDF and are ground truth).
-
-If the user asks a general legal question:
-- Use KNOWLEDGE BASE CLAUSES from CUAD database.
-
-CONTRACT CLAUSES:
+--------------------------
+CONTRACT_CLAUSES (uploaded contract text, may be "None"):
 {contract_clauses}
 
-KNOWLEDGE BASE CLAUSES:
+--------------------------
+KB_CLAUSES (general legal background or CUAD snippets, may be "None"):
 {kb_clauses}
 
-Question:
+--------------------------
+USER QUESTION:
 {question}
 
-Give a clear, structured answer and cite clause numbers where available.
-""")
+INSTRUCTIONS:
+- Infer whether you are in USER CONTRACT MODE (contract_clauses present) or CUAD MODE (kb_clauses present, contract_clauses empty).
+- Classify the question internally as one of: Fetching, Verification, Reasoning, Simple factual Q&A.
+- Follow the mode-specific behavior and output format from the system messages.
+- Do NOT mention the internal labels or your reasoning steps.
+- Just provide the final answer in the appropriate structured format.
+"""
+        ),
+    ])
 
-    def prepare_context(q):
+    def prepare_context(q: str):
+        # Existing routing logic: sends to user_db if CONTRACT_KEYWORDS match, else CUAD.
         user_docs, kb_docs = retrieve_docs(q)
 
+        contract_text = "\n\n".join(d.page_content for d in user_docs) or "None"
+        kb_text = "\n\n".join(d.page_content for d in kb_docs) or "None"
+
         return {
-            "contract_clauses": "\n\n".join(d.page_content for d in user_docs) or "None",
-            "kb_clauses": "\n\n".join(d.page_content for d in kb_docs) or "None",
-            "question": q
+            "contract_clauses": contract_text,
+            "kb_clauses": kb_text,
+            "question": q,
         }
 
     return prepare_context | prompt | llm | StrOutputParser()

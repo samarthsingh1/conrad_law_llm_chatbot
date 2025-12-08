@@ -2,6 +2,8 @@ from pathlib import Path
 import os
 import re
 
+# -------- Prompts--------
+from prompts import *
 # -------- Vector DBs --------
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader
@@ -21,7 +23,7 @@ from langchain_core.output_parsers import StrOutputParser
 #  GLOBAL CONFIG
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parents[1] / "notebook"
+BASE_DIR = Path(__file__).resolve().parents[1] / "/Users/kanishkkaul/Desktop/NLP_Project/conrad_law_llm_chatbot/notebook"
 
 USER_FAISS_DIR = BASE_DIR / "vectorstores" / "user_contracts_faiss"
 CUAD_FAISS_DIR = BASE_DIR / "vectorstores" / "cuad_faiss_index"
@@ -404,57 +406,51 @@ def _create_llm():
     )
 
 
-# ============================================================
-#  CONTEXT FORMATTING FOR RAG
-# ============================================================
-
-def format_contract_docs(docs):
-    if not docs:
-        return "None"
-
-    lines = []
-    for d in docs:
-        cname = d.metadata.get("contract_name", "User Contract")
-        cnum = d.metadata.get("clause_number", "N/A")
-        text = d.page_content.strip()
-        lines.append(f"[Contract: {cname} | Clause {cnum}]\n{text}")
-    return "\n\n---\n\n".join(lines)
 
 
-def format_cuad_docs(docs):
-    """
-    Format CUAD QA documents for the prompt.
+def get_rag_chain():
+    llm = _create_llm()
+    # 4) COMBINED PROMPT
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", global_system_prompt),
+        ("system", user_vector_db_prompt),
+        ("system", cuad_vector_db_prompt),
+        (
+            "human",
+            """You are now answering a single user question.
 
-    Retrieval is done over "Question + Answer" embeddings,
-    but we display them using structured metadata.
-    """
-    if not docs:
-        return "None"
+--------------------------
+CONTRACT_CLAUSES (uploaded contract text, may be "None"):
+{contract_clauses}
 
-    MAX_CTX_CHARS = 1200
+--------------------------
+KB_CLAUSES (general legal background or CUAD snippets, may be "None"):
+{kb_clauses}
 
-    lines = []
-    for d in docs:
-        meta = d.metadata or {}
-        q = meta.get("question") or d.page_content
-        a = meta.get("answer", "")
-        ctx = meta.get("context", "")
+--------------------------
+USER QUESTION:
+{question}
 
-        if len(ctx) > MAX_CTX_CHARS:
-            ctx_display = ctx[:MAX_CTX_CHARS] + "... [truncated]"
-        else:
-            ctx_display = ctx
+INSTRUCTIONS:
+- Infer whether you are in USER CONTRACT MODE (contract_clauses present) or CUAD MODE (kb_clauses present, contract_clauses empty).
+- Classify the question internally as one of: Fetching, Verification, Reasoning, Simple factual Q&A.
+- Follow the mode-specific behavior and output format from the system messages.
+- Do NOT mention the internal labels or your reasoning steps.
+- Just provide the final answer in the appropriate structured format.
+"""
+        ),
+    ])
 
-        lines.append(
-            f"Question: {q}\n"
-            f"Answer: {a}\n\n"
-            f"Source contract excerpt:\n{ctx_display}"
-        )
-    return "\n\n---\n\n".join(lines)
+    def prepare_context(q: str):
+        # Existing routing logic: sends to user_db if CONTRACT_KEYWORDS match, else CUAD.
+        user_docs, kb_docs = retrieve_docs(q)
 
+        contract_text = "\n\n".join(d.page_content for d in user_docs) or "None"
+        kb_text = "\n\n".join(d.page_content for d in kb_docs) or "None"
 
-# ============================================================
-#  RAG CHAIN
-# ============================================================
-
+        return {
+            "contract_clauses": contract_text,
+            "kb_clauses": kb_text,
+            "question": q,
+        }
 

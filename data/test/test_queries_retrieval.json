@@ -1,0 +1,14 @@
+[
+  {
+    "query": "What is the governing law clause?",
+    "relevant_chunk_ids": [12, 13]
+  },
+  {
+    "query": "When does the term renew automatically?",
+    "relevant_chunk_ids": [45]
+  },
+  {
+    "query": "Explain confidentiality obligations in the contract.",
+    "relevant_chunk_ids": [5, 6, 7]
+  }
+]

@@ -43,6 +43,42 @@ cuad_db = None
 
 CURRENT_UPLOADED_CONTRACT = None
 
+
+
+# ============================================================
+#  DEVELOPMENT TOOL (DELETE BEFORE PRODUCTION)
+# ============================================================
+
+def format_top_k_clauses(retrieved_docs, k=5):
+    """
+    Utility for Chainlit debugging.
+    Shows the top-k retrieved chunks with metadata.
+    """
+    if not retrieved_docs:
+        return " No retrieved clauses."
+
+    retrieved_docs = retrieved_docs[:k]
+
+    md = "### 🔎 Top Retrieved Clauses\n\n"
+
+    for i, doc in enumerate(retrieved_docs, start=1):
+        meta = doc.metadata or {}
+        source = "USER CONTRACT" if meta.get("contract_name") else "CUAD KB"
+        clause_no = meta.get("clause_number", "N/A")
+        chunk_id = meta.get("chunk_id", "N/A")
+
+        preview = doc.page_content[:200].replace("\n", " ") + "..."
+
+        md += (
+            f"**Result {i}**\n"
+            f"- **Source:** `{source}`\n"
+            f"- **Clause Number:** `{clause_no}`\n"
+            f"- **Chunk ID:** `{chunk_id}`\n"
+            f"- **Text Preview:** {preview}\n\n"
+        )
+
+    return md
+
 # ============================================================
 # LOAD VECTOR DATABASES
 # ============================================================

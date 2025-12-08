@@ -1,0 +1,12 @@
+[
+  {
+    "question": "What is the governing law clause?",
+    "reference": "The agreement shall be governed by the laws of Delaware.",
+    "model_answer": "This agreement is governed by Delaware law."
+  },
+  {
+    "question": "Explain the confidentiality clause.",
+    "reference": "Both parties must keep all confidential information secret and not disclose it.",
+    "model_answer": "Each party agrees not to disclose confidential information."
+  }
+]

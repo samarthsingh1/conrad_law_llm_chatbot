@@ -457,21 +457,4 @@ def format_cuad_docs(docs):
 #  RAG CHAIN
 # ============================================================
 
-def get_rag_chain():
-    llm = _create_llm()
-
-    prompt = ChatPromptTemplate.from_template("""""")
-
-    def prepare_context(q):
-        user_docs, kb_docs = retrieve_docs(q)
-
-        return {
-            "contract_clauses": format_contract_docs(user_docs),
-            "kb_clauses": format_cuad_docs(kb_docs),
-            "question": q
-        }
-
-    return prepare_context | prompt | llm | StrOutputParser()
-
-
 

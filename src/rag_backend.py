@@ -23,7 +23,7 @@ from langchain_core.output_parsers import StrOutputParser
 #  GLOBAL CONFIG
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parents[1] / "/Users/kanishkkaul/Desktop/NLP_Project/conrad_law_llm_chatbot/notebook"
+BASE_DIR = Path(__file__).resolve().parents[1] / "/Users/samarthsingh/PycharmProjects/conrad_law_llm_chatbot/notebook/"
 
 USER_FAISS_DIR = BASE_DIR / "vectorstores" / "user_contracts_faiss"
 CUAD_FAISS_DIR = BASE_DIR / "vectorstores" / "cuad_faiss_index"
@@ -59,7 +59,7 @@ def format_top_k_clauses(retrieved_docs, k=5):
 
     retrieved_docs = retrieved_docs[:k]
 
-    md = "## 🔎 Top Retrieved Items\n\n"
+    md = "##  Top Retrieved Items\n\n"
 
     for i, doc in enumerate(retrieved_docs, start=1):
         meta = doc.metadata or {}
@@ -105,7 +105,7 @@ def load_user_db():
     """Load the user-uploaded contract FAISS DB."""
     global user_db
     if user_db is None:
-        print("📂 Loading USER contract FAISS DB...")
+        print(" Loading USER contract FAISS DB...")
         user_db = FAISS.load_local(
             folder_path=str(USER_FAISS_DIR),
             embeddings=embeddings,
@@ -122,14 +122,14 @@ def load_cuad_db():
         return cuad_db
 
     if CUAD_FAISS_DIR.exists():
-        print("📚 Loading CUAD QA FAISS DB...")
+        print(" Loading CUAD QA FAISS DB...")
         cuad_db = FAISS.load_local(
             folder_path=str(CUAD_FAISS_DIR),
             embeddings=embeddings,
             allow_dangerous_deserialization=True
         )
     else:
-        print("⚠️ CUAD FAISS index not found")
+        print(" CUAD FAISS index not found")
     return cuad_db
 
 
@@ -359,31 +359,31 @@ def retrieve_docs(query: str, k: int = 6):
 
     # 1) Heuristic rules
     if _looks_like_contract_specific(q):
-        print("🟦 Routed to USER contract DB (lexical rule)")
+        print(" Routed to USER contract DB (lexical rule)")
         user_db = load_user_db()
         return user_db.similarity_search(q, k=k), []
 
     if _looks_like_generic_legal(q):
-        print("🟩 Routed to CUAD legal QA DB (lexical rule)")
+        print(" Routed to CUAD legal QA DB (lexical rule)")
         kb_db = load_cuad_db()
         return [], kb_db.similarity_search(q, k=k)
 
     # 2) LLM router for ambiguous cases
     decision = llm_route_decision(q)
-    print(f"🧠 LLM router decision: {decision}")
+    print(f" LLM router decision: {decision}")
 
     if decision == "contract":
-        print("🟦 Routed to USER contract DB (LLM router)")
+        print(" Routed to USER contract DB (LLM router)")
         user_db = load_user_db()
         return user_db.similarity_search(q, k=k), []
 
     if decision == "general":
-        print("🟩 Routed to CUAD legal QA DB (LLM router)")
+        print(" Routed to CUAD legal QA DB (LLM router)")
         kb_db = load_cuad_db()
         return [], kb_db.similarity_search(q, k=k)
 
     # BOTH
-    print("🟪 Routed to BOTH USER and CUAD DBs (LLM router)")
+    print(" Routed to BOTH USER and CUAD DBs (LLM router)")
     user_db = load_user_db()
     kb_db = load_cuad_db()
     k_user = max(2, k // 2)
@@ -405,52 +405,123 @@ def _create_llm():
         model=LLM_MODEL
     )
 
+# ============================================================
+#  CONTEXT FORMATTING FOR RAG
+# ============================================================
 
+def format_contract_docs(docs):
+    if not docs:
+        return "None"
+
+    lines = []
+    for d in docs:
+        cname = d.metadata.get("contract_name", "User Contract")
+        cnum = d.metadata.get("clause_number", "N/A")
+        text = d.page_content.strip()
+        lines.append(f"[Contract: {cname} | Clause {cnum}]\n{text}")
+    return "\n\n---\n\n".join(lines)
+
+
+def format_cuad_docs(docs):
+    """
+    Format CUAD QA documents for the prompt.
+
+    Retrieval is done over "Question + Answer" embeddings,
+    but we display them using structured metadata.
+    """
+    if not docs:
+        return "None"
+
+    MAX_CTX_CHARS = 1200
+
+    lines = []
+    for d in docs:
+        meta = d.metadata or {}
+        q = meta.get("question") or d.page_content
+        a = meta.get("answer", "")
+        ctx = meta.get("context", "")
+
+        if len(ctx) > MAX_CTX_CHARS:
+            ctx_display = ctx[:MAX_CTX_CHARS] + "... [truncated]"
+        else:
+            ctx_display = ctx
+
+        lines.append(
+            f"Question: {q}\n"
+            f"Answer: {a}\n\n"
+            f"Source contract excerpt:\n{ctx_display}"
+        )
+    return "\n\n---\n\n".join(lines)
 
 
 def get_rag_chain():
     llm = _create_llm()
-    # 4) COMBINED PROMPT
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", global_system_prompt),
-        ("system", user_vector_db_prompt),
-        ("system", cuad_vector_db_prompt),
-        (
-            "human",
-            """You are now answering a single user question.
 
---------------------------
-CONTRACT_CLAUSES (uploaded contract text, may be "None"):
+    prompt = ChatPromptTemplate.from_template("""
+You are a careful legal reasoning assistant. You MUST base your answer ONLY on the context provided below.
+
+---------------- CONTRACT CONTEXT ----------------
+CONTRACT CLAUSES (User-uploaded contract):
 {contract_clauses}
 
---------------------------
-KB_CLAUSES (general legal background or CUAD snippets, may be "None"):
+KNOWLEDGE BASE Q&A (CUAD dataset):
 {kb_clauses}
+--------------------------------------------------
 
---------------------------
-USER QUESTION:
+User question:
 {question}
 
-INSTRUCTIONS:
-- Infer whether you are in USER CONTRACT MODE (contract_clauses present) or CUAD MODE (kb_clauses present, contract_clauses empty).
-- Classify the question internally as one of: Fetching, Verification, Reasoning, Simple factual Q&A.
-- Follow the mode-specific behavior and output format from the system messages.
-- Do NOT mention the internal labels or your reasoning steps.
-- Just provide the final answer in the appropriate structured format.
-"""
-        ),
-    ])
+ROLE & CONTEXT USAGE
+- If the answer can be found in the user's CONTRACT CLAUSES (e.g., question mentions "my contract", "this agreement", "clause X", "section Y"):
+  - Treat CONTRACT CLAUSES as ground truth.
+  - Use CUAD Q&A only as background knowledge if absolutely needed, and clearly label it as "general practice", not binding on the user's contract.
+- If the question is a general legal question (not about a specific uploaded contract):
+  - Answer using CUAD Q&A as examples of how similar questions are answered in real contracts.
+  - DO NOT invent laws; stay within the patterns in CUAD.
 
-    def prepare_context(q: str):
-        # Existing routing logic: sends to user_db if CONTRACT_KEYWORDS match, else CUAD.
+ANSWER FORMAT (VERY IMPORTANT)
+Always answer in **markdown** with the following structure:
+
+1. ## Answer summary
+   - 2–4 bullet points that give a concise, non-technical summary.
+2. ## Detailed explanation
+   - 2–5 short paragraphs explaining the concept in plain English.
+   - When explaining a term (e.g. "force majeure"), include:
+     - What it generally means.
+     - Typical conditions for it to apply.
+     - At least one simple real-world example.
+3. ## Relevant clauses / examples
+   - If using the user's contract:
+     - Bullet points like:
+       - **Clause 5.2 – Force Majeure:** [brief paraphrase]
+       - **Clause 9.1 – Termination for Force Majeure:** [brief paraphrase]
+   - If using CUAD Q&A:
+     - Bullet points like:
+       - **Example 1 (CUAD QA):** [short paraphrase of answer]
+       - **Contract excerpt:** [one-sentence summary of the context]
+4. ## Caveats
+   - 1–3 bullet points noting:
+     - That this is not formal legal advice.
+     - That exact rights and obligations depend on the full contract and jurisdiction.
+
+STYLE GUIDELINES
+- Use clear headings and bullet points.
+- Keep sentences medium length; avoid long, dense paragraphs.
+- Quote or paraphrase relevant clauses instead of copying huge blocks of text.
+- If information is missing in the context, say so explicitly instead of guessing.
+
+Now write the answer following the structure above.
+""")
+
+    def prepare_context(q):
         user_docs, kb_docs = retrieve_docs(q)
 
-        contract_text = "\n\n".join(d.page_content for d in user_docs) or "None"
-        kb_text = "\n\n".join(d.page_content for d in kb_docs) or "None"
-
         return {
-            "contract_clauses": contract_text,
-            "kb_clauses": kb_text,
-            "question": q,
+            "contract_clauses": format_contract_docs(user_docs),
+            "kb_clauses": format_cuad_docs(kb_docs),
+            "question": q
         }
+
+    return prepare_context | prompt | llm | StrOutputParser()
+
 

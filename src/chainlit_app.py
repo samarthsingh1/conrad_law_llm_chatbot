@@ -17,7 +17,7 @@ rag_chain = get_rag_chain()
 async def start_chat():
     await cl.Message(
         content=(
-            "*📑 Contract RAG Assistant*\n\n"
+            "* Contract RAG Assistant*\n\n"
             "Upload a contract PDF, then ask questions like:\n"
             "- What does Clause 5 say?\n"
             "- Explain confidentiality in my agreement.\n"
@@ -51,7 +51,7 @@ async def on_message(message: cl.Message):
 
                 await cl.Message(
                     content=(
-                        f"✅ *{file_name}* processed successfully.\n"
+                        f" *{file_name}* processed successfully.\n"
                         "You may now ask questions about your contract."
                     )
                 ).send()
@@ -65,7 +65,7 @@ async def on_message(message: cl.Message):
         await cl.Message(content="Please enter a question.").send()
         return
 
-    await cl.Message(content="🔎 Analyzing your question...").send()
+    await cl.Message(content=" Analyzing your question...").send()
 
     # -------------------------------------------------------------
     # NEW: Retrieve clauses BEFORE answering
@@ -78,14 +78,14 @@ async def on_message(message: cl.Message):
 
         await cl.Message(
             content=(
-                "### 📌 Retrieved Clauses Used for Answer\n"
+                "### Retrieved Clauses Used for Answer\n"
                 "(Development Mode)\n\n"
                 + top_k_markdown
             )
         ).send()
 
     except Exception as e:
-        await cl.Message(content=f"⚠️ Retrieval error:\n{e}").send()
+        await cl.Message(content=f" Retrieval error:\n{e}").send()
 
     # -------------------------------------------------------------
     # Generate the final LLM answer
@@ -93,13 +93,13 @@ async def on_message(message: cl.Message):
     try:
         answer = rag_chain.invoke(question)
     except Exception as e:
-        await cl.Message(content=f"❌ Error during RAG processing:\n{e}").send()
+        await cl.Message(content=f" Error during RAG processing:\n{e}").send()
         return
 
     # 3️⃣ Send final answer
     await cl.Message(
         content=(
-            "### 🤖 Final Answer\n\n"
+            "###  Final Answer\n\n"
             f"{answer}"
         )
     ).send()

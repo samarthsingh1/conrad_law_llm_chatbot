@@ -26,8 +26,6 @@ BASE_DIR = Path(__file__).resolve().parents[1] / "notebook"
 USER_FAISS_DIR = BASE_DIR / "vectorstores" / "user_contracts_faiss"
 CUAD_FAISS_DIR = BASE_DIR / "vectorstores" / "cuad_faiss_index"
 
-CUAD_DATA_DIR = BASE_DIR / "cuad_data"
-
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 LLM_MODEL = "llama-3.3-70b-versatile"
@@ -63,43 +61,55 @@ def format_top_k_clauses(retrieved_docs, k=5):
 
     for i, doc in enumerate(retrieved_docs, start=1):
         meta = doc.metadata or {}
-        
+
         # Identify source
         if meta.get("contract_name"):
             source = "USER CONTRACT"
         else:
             source = "CUAD QA"
 
-        # Common metadata
         chunk_id = meta.get("chunk_id", "N/A")
 
-        # CUAD QA fields
+        # CUAD metadata
         q = meta.get("question", doc.page_content)
         a = meta.get("answer", None)
         ctx = meta.get("context", None)
 
-        # User contract fields
+        # USER contract metadata
         clause_no = meta.get("clause_number", None)
 
         md += f"### Result {i}\n"
         md += f"- **Source**: {source}\n"
         md += f"- **Chunk ID**: {chunk_id}\n"
 
+        # USER CONTRACT formatting
         if source == "USER CONTRACT":
-            md += f"- **Clause Number**: {clause_no}\n"
             preview = doc.page_content[:200].replace("\n", " ")
+            md += f"- **Clause Number**: {clause_no}\n"
             md += f"- **Text Preview**: {preview}...\n\n"
 
-        else:  # CUAD QA
+        else:  # CUAD QA formatting
             md += f"- **Question**: {q}\n"
             if a:
                 md += f"- **Answer**: {a}\n"
             if ctx:
-                md += f"- **Context (excerpt)**: {ctx[:200].replace('\n', ' ')}...\n"
+                clean_ctx = ctx[:200].replace("\n", " ")
+                md += f"- **Context (excerpt)**: {clean_ctx}...\n"
             md += "\n"
 
     return md
 
+def load_user_db():
+    """Load the user-uploaded contract FAISS DB."""
+    global user_db
+    if user_db is None:
+        print("📂 Loading USER contract FAISS DB...")
+        user_db = FAISS.load_local(
+            folder_path=str(USER_FAISS_DIR),
+            embeddings=embeddings,
+            allow_dangerous_deserialization=True
+        )
+    return user_db
 
 def load_cuad_db():
     """
@@ -450,61 +460,7 @@ def format_cuad_docs(docs):
 def get_rag_chain():
     llm = _create_llm()
 
-    prompt = ChatPromptTemplate.from_template("""
-You are a careful legal reasoning assistant. You MUST base your answer ONLY on the context provided below.
-
----------------- CONTRACT CONTEXT ----------------
-CONTRACT CLAUSES (User-uploaded contract):
-{contract_clauses}
-
-KNOWLEDGE BASE Q&A (CUAD dataset):
-{kb_clauses}
---------------------------------------------------
-
-User question:
-{question}
-
-ROLE & CONTEXT USAGE
-- If the answer can be found in the user's CONTRACT CLAUSES (e.g., question mentions "my contract", "this agreement", "clause X", "section Y"):
-  - Treat CONTRACT CLAUSES as ground truth.
-  - Use CUAD Q&A only as background knowledge if absolutely needed, and clearly label it as "general practice", not binding on the user's contract.
-- If the question is a general legal question (not about a specific uploaded contract):
-  - Answer using CUAD Q&A as examples of how similar questions are answered in real contracts.
-  - DO NOT invent laws; stay within the patterns in CUAD.
-
-ANSWER FORMAT (VERY IMPORTANT)
-Always answer in **markdown** with the following structure:
-
-1. ## Answer summary
-   - 2–4 bullet points that give a concise, non-technical summary.
-2. ## Detailed explanation
-   - 2–5 short paragraphs explaining the concept in plain English.
-   - When explaining a term (e.g. "force majeure"), include:
-     - What it generally means.
-     - Typical conditions for it to apply.
-     - At least one simple real-world example.
-3. ## Relevant clauses / examples
-   - If using the user's contract:
-     - Bullet points like:
-       - **Clause 5.2 – Force Majeure:** [brief paraphrase]
-       - **Clause 9.1 – Termination for Force Majeure:** [brief paraphrase]
-   - If using CUAD Q&A:
-     - Bullet points like:
-       - **Example 1 (CUAD QA):** [short paraphrase of answer]
-       - **Contract excerpt:** [one-sentence summary of the context]
-4. ## Caveats
-   - 1–3 bullet points noting:
-     - That this is not formal legal advice.
-     - That exact rights and obligations depend on the full contract and jurisdiction.
-
-STYLE GUIDELINES
-- Use clear headings and bullet points.
-- Keep sentences medium length; avoid long, dense paragraphs.
-- Quote or paraphrase relevant clauses instead of copying huge blocks of text.
-- If information is missing in the context, say so explicitly instead of guessing.
-
-Now write the answer following the structure above.
-""")
+    prompt = ChatPromptTemplate.from_template("""""")
 
     def prepare_context(q):
         user_docs, kb_docs = retrieve_docs(q)
@@ -518,17 +474,4 @@ Now write the answer following the structure above.
     return prepare_context | prompt | llm | StrOutputParser()
 
 
-def answer_question(question: str) -> str:
-    chain = get_rag_chain()
-    return chain.invoke(question)
 
-
-if __name__ == "__main__":
-    q1 = "What is a typical non-compete clause in a SaaS agreement?"
-    print("Q1:", q1)
-    print("A1:", answer_question(q1))
-    print("\n" + "=" * 80 + "\n")
-
-    q2 = "What does the termination clause in my contract say?"
-    print("Q2:", q2)
-    print("A2:", answer_question(q2))

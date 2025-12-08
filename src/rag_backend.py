@@ -70,6 +70,9 @@ def format_top_k_clauses(retrieved_docs, k=5):
         else:
             source = "CUAD QA"
 
+        # Common metadata
+        chunk_id = meta.get("chunk_id", "N/A")
+
         # CUAD QA fields
         q = meta.get("question", doc.page_content)
         a = meta.get("answer", None)
@@ -80,6 +83,7 @@ def format_top_k_clauses(retrieved_docs, k=5):
 
         md += f"### Result {i}\n"
         md += f"- **Source**: {source}\n"
+        md += f"- **Chunk ID**: {chunk_id}\n"
 
         if source == "USER CONTRACT":
             md += f"- **Clause Number**: {clause_no}\n"

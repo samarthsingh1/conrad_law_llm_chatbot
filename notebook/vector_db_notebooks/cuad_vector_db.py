@@ -87,19 +87,22 @@ def build_qa_vector_store(all_qas):
     Build a FAISS vector store where:
       - page_content = "Question: ...\\nAnswer: ..."
         (this is what gets embedded for similarity search)
-      - metadata = {question, answer, context, qa_id, answer_start}
-        (used later for prompt formatting)
+      - metadata = {
+            question, answer, context,
+            qa_id, answer_start, chunk_id
+        }
+        (used later for debugging / prompt formatting)
     """
     print(f"Building CUAD QA vector store from {len(all_qas)} QA pairs...")
 
     texts = []
     metadatas = []
 
-    for qa in all_qas:
-        question_text = qa["question"] or ""
-        answer_text = qa["answer"] or ""
+    for idx, qa in enumerate(all_qas):
+        question_text = qa.get("question") or ""
+        answer_text = qa.get("answer") or ""
 
-        # 🔹 This combined string is what FAISS will embed & compare to user queries
+        # This combined string is what FAISS will embed & compare to user queries
         combined = f"Question: {question_text}\nAnswer: {answer_text}"
 
         texts.append(combined)
@@ -110,6 +113,7 @@ def build_qa_vector_store(all_qas):
                 "answer": answer_text,
                 "context": qa["context"],
                 "answer_start": qa["answer_start"],
+                "chunk_id": idx,  # 🔹 add chunk id for debugging / tracing
             }
         )
 
@@ -124,6 +128,7 @@ def build_qa_vector_store(all_qas):
         metadatas=metadatas,
     )
     return vector_store
+
 
 
 # ==============================================

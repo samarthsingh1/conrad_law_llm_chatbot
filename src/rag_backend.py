@@ -149,7 +149,7 @@ def is_contract_question(query: str):
     return any(kw in q for kw in CONTRACT_KEYWORDS)
 
 
-def retrieve_docs(query: str, k=3):
+def retrieve_docs(query: str, k=6):
     """
     ROUTING LOGIC — RETAINED EXACTLY AS YOU REQUESTED.
 

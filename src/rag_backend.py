@@ -2,9 +2,6 @@ from pathlib import Path
 import os
 import re
 
-# -------- External Data --------
-# from datasets import load_dataset
-
 # -------- Vector DBs --------
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader
@@ -29,16 +26,15 @@ BASE_DIR = Path(__file__).resolve().parents[1] / "notebook"
 USER_FAISS_DIR = BASE_DIR / "vectorstores" / "user_contracts_faiss"
 CUAD_FAISS_DIR = BASE_DIR / "vectorstores" / "cuad_faiss_index"
 
-# Folder where CUAD JSON files live:
-#   - train_separate_questions.json
-#   - CUADv1.json
-#   - test.json
 CUAD_DATA_DIR = BASE_DIR / "cuad_data"
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 LLM_MODEL = "llama-3.3-70b-versatile"
-GROQ_API_KEY = "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"  # replace with your real key
+# You can use a *smaller* model for routing below if you like.
+ROUTER_MODEL = LLM_MODEL  # e.g. "llama-3.1-8b-instant" if available on Groq
+
+GROQ_API_KEY = "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" 
 
 # ============================================================
 #  GLOBAL STATE
@@ -75,7 +71,7 @@ def format_top_k_clauses(retrieved_docs, k=5):
             source = "CUAD QA"
 
         # CUAD QA fields
-        q = doc.page_content
+        q = meta.get("question", doc.page_content)
         a = meta.get("answer", None)
         ctx = meta.get("context", None)
 
@@ -104,8 +100,6 @@ def format_top_k_clauses(retrieved_docs, k=5):
 def load_cuad_db():
     """
     Load the CUAD QA-based FAISS DB.
-
-    If it does not exist yet, build it from the CUAD QA pairs.
     """
     global cuad_db
     if cuad_db is not None:
@@ -120,7 +114,6 @@ def load_cuad_db():
         )
     else:
         print("⚠️ CUAD FAISS index not found")
-        # cuad_db = build_cuad_qa_vectorstore(save_to_disk=True)
     return cuad_db
 
 
@@ -136,8 +129,6 @@ def extract_numbered_clauses(text: str):
       1.1.1
       2
       2.4
-
-    Each clause captures from its number until the next number or end of text.
     """
     pattern = r"(?m)^(?P<num>\d+(\.\d+)*)(?P<body>[\s\S]*?)(?=^\d+(\.\d+)*|\Z)"
     clauses = []
@@ -186,55 +177,209 @@ def add_contract_pdf_to_vectorstore(pdf_path: str, contract_name: str):
 
 
 async def process_pdf_and_add_to_vector_db(pdf_path: str):
-    """
-    Async wrapper for adding a user contract PDF to the FAISS DB.
-    Can be awaited from an async web framework (e.g., FastAPI, Streamlit async).
-    """
     add_contract_pdf_to_vectorstore(pdf_path, Path(pdf_path).stem)
 
 
 # ============================================================
-#  ROUTING LOGIC (UNCHANGED IN SPIRIT)
+#  ROUTING LOGIC (HEURISTICS + LLM ROUTER)
 # ============================================================
 
-CONTRACT_KEYWORDS = [
-    "my contract", "this contract", "uploaded contract",
-    "clause", "section", "agreement", "provision", "term",
-    "in the contract", "in my agreement"
+# Strong indicators that the user is asking about THEIR uploaded contract
+CONTRACT_STRONG_KEYWORDS = [
+    # explicit contract/agreement references
+    "my contract",
+    "this contract",
+    "our contract",
+    "my agreement",
+    "this agreement",
+    "our agreement",
+    "uploaded contract",
+    "uploaded agreement",
+    "my nda",
+    "this nda",
+    "my lease",
+    "this lease",
+
+    # generic doc/file references that usually mean the uploaded PDF
+    "this document",
+    "in this document",
+    "this file",
+    "this pdf",
+    "in the uploaded file",
+    "in the uploaded document",
+]
+
+# Generic legal question phrasing (no explicit reference to user's contract)
+GENERIC_QUESTION_PREFIXES = [
+    "what is",
+    "what are",
+    "explain",
+    "define",
+    "how does",
+    "how do",
+    "typically",
+    "in general",
+    "usually",
 ]
 
 
-def is_contract_question(query: str):
-    """
-    Heuristic routing: if query references 'my contract' or similar,
-    we treat it as a question about the user-uploaded contract.
-    """
-    q = query.lower()
-    return any(kw in q for kw in CONTRACT_KEYWORDS)
+DEICTIC_CONTRACT_HINTS = [
+    " here",
+    " here?",
+    " here.",
+    " in this clause",
+    " in this section",
+    " in this document",
+    " in this agreement",
+    " in this contract",
+]
+
+def _looks_like_contract_specific(q: str) -> bool:
+    q = q.lower()
+
+    # 1) Strong keywords: "my contract", "this agreement", etc.
+    if any(kw in q for kw in CONTRACT_STRONG_KEYWORDS):
+        return True
+
+    # 2) Deictic hints like "here", "in this clause" WHEN a contract is uploaded
+    if CURRENT_UPLOADED_CONTRACT and any(hint in q for hint in DEICTIC_CONTRACT_HINTS):
+        return True
+
+    # 3) Patterns like "clause 5", "section 3.2" together with "my/this/our"
+    has_clause_ref = bool(
+        re.search(r"\bclause\s+\d+(\.\d+)*", q) or
+        re.search(r"\bsection\s+\d+(\.\d+)*", q)
+    )
+    has_possessive = any(w in q for w in ["my ", "this ", "our "])
+
+    if has_clause_ref and has_possessive:
+        return True
+
+    return False
 
 
-def retrieve_docs(query: str, k=6):
-    """
-    ROUTING LOGIC:
 
-    - If question references the user's contract → search USER DB only.
-    - Otherwise → search CUAD QA DB only.
+def _looks_like_generic_legal(q: str) -> bool:
+    ql = q.lower()
 
-    Returns:
-      (user_docs, kb_docs)
+    # Generic definitional question
+    starts_like_def = any(
+        ql.startswith(p) or f" {p} " in ql for p in GENERIC_QUESTION_PREFIXES
+    )
+
+    if starts_like_def and not any(kw in ql for kw in CONTRACT_STRONG_KEYWORDS):
+        return True
+
+    return False
+
+
+def _create_router_llm():
+    """Small LLM used only for routing when heuristics are ambiguous."""
+    return ChatGroq(
+        temperature=0,
+        groq_api_key=GROQ_API_KEY,
+        model=ROUTER_MODEL,
+    )
+
+
+def llm_route_decision(query: str) -> str:
     """
-    if is_contract_question(query):
-        print("🟦 Routed to USER contract DB")
+    Use an LLM to classify the query as:
+      - 'contract' -> user uploaded contract
+      - 'general'  -> generic legal / CUAD
+      - 'both'     -> use both sources
+    """
+    router_llm = _create_router_llm()
+
+    prompt = f"""
+You are a routing classifier for a legal Q&A assistant.
+
+Decide whether the USER is asking about:
+- their SPECIFIC uploaded contract (label: contract),
+- a GENERAL legal question (label: general), or
+- BOTH (label: both).
+
+Guidelines:
+- Use 'contract' if they talk about "my contract", "this agreement", "this document",
+  specific clause numbers in their document, etc.
+- Use 'general' if they ask what something means in general, or typical legal meaning,
+  without referencing their specific contract.
+- Use 'both' if they clearly mix both (e.g. "in my contract and in general, how is X handled?").
+
+Return ONLY one word: contract, general, or both.
+
+User question: {query}
+
+Answer with a single word:
+"""
+
+    resp = router_llm.invoke(prompt)
+    label = resp.content.strip().lower()
+
+    if "contract" in label:
+        return "contract"
+    if "both" in label:
+        return "both"
+    if "general" in label:
+        return "general"
+
+    # Fallback
+    return "general"
+
+
+def retrieve_docs(query: str, k: int = 6):
+    """
+    ROUTING LOGIC (IMPROVED):
+
+    1. Heuristics first (cheap):
+       - If clearly contract-specific → USER DB only.
+       - If clearly generic legal → CUAD DB only.
+    2. If ambiguous → LLM router:
+       - 'contract' -> USER DB
+       - 'general'  -> CUAD DB
+       - 'both'     -> both DBs (split k)
+    """
+    q = query.strip()
+
+    # 1) Heuristic rules
+    if _looks_like_contract_specific(q):
+        print("🟦 Routed to USER contract DB (lexical rule)")
         user_db = load_user_db()
-        return user_db.similarity_search(query, k=k), []
+        return user_db.similarity_search(q, k=k), []
 
-    print("🟩 Routed to CUAD legal QA DB")
+    if _looks_like_generic_legal(q):
+        print("🟩 Routed to CUAD legal QA DB (lexical rule)")
+        kb_db = load_cuad_db()
+        return [], kb_db.max_marginal_relevance_search(q, k=k)
+
+    # 2) LLM router for ambiguous cases
+    decision = llm_route_decision(q)
+    print(f"🧠 LLM router decision: {decision}")
+
+    if decision == "contract":
+        print("🟦 Routed to USER contract DB (LLM router)")
+        user_db = load_user_db()
+        return user_db.similarity_search(q, k=k), []
+
+    if decision == "general":
+        print("🟩 Routed to CUAD legal QA DB (LLM router)")
+        kb_db = load_cuad_db()
+        return [], kb_db.similarity_search(q, k=k)
+
+    # BOTH
+    print("🟪 Routed to BOTH USER and CUAD DBs (LLM router)")
+    user_db = load_user_db()
     kb_db = load_cuad_db()
-    return [], kb_db.similarity_search(query, k=k)
+    k_user = max(2, k // 2)
+    k_kb = max(2, k - k_user)
+    return (
+        user_db.similarity_search(q, k=k_user),
+        kb_db.similarity_search(q, k=k_kb),
+    )
 
 
 # ============================================================
-#  LLM SETUP
+#  LLM SETUP (MAIN ANSWER MODEL)
 # ============================================================
 
 def _create_llm():
@@ -250,10 +395,6 @@ def _create_llm():
 # ============================================================
 
 def format_contract_docs(docs):
-    """
-    Format user contract clauses for the prompt.
-    Uses metadata to show contract name & clause number where available.
-    """
     if not docs:
         return "None"
 
@@ -270,21 +411,21 @@ def format_cuad_docs(docs):
     """
     Format CUAD QA documents for the prompt.
 
-    Remember: for CUAD, page_content = QUESTION.
-    ANSWER + CONTEXT are stored in metadata and reconstructed here.
+    Retrieval is done over "Question + Answer" embeddings,
+    but we display them using structured metadata.
     """
     if not docs:
         return "None"
 
-    MAX_CTX_CHARS = 1200  # <-- keep this small; adjust if needed
+    MAX_CTX_CHARS = 1200
 
     lines = []
     for d in docs:
-        q = d.page_content
-        a = d.metadata.get("answer", "")
-        ctx = d.metadata.get("context", "")
+        meta = d.metadata or {}
+        q = meta.get("question") or d.page_content
+        a = meta.get("answer", "")
+        ctx = meta.get("context", "")
 
-        # 🔹 Truncate long contexts aggressively
         if len(ctx) > MAX_CTX_CHARS:
             ctx_display = ctx[:MAX_CTX_CHARS] + "... [truncated]"
         else:
@@ -296,7 +437,6 @@ def format_cuad_docs(docs):
             f"Source contract excerpt:\n{ctx_display}"
         )
     return "\n\n---\n\n".join(lines)
-
 
 
 # ============================================================
@@ -375,31 +515,16 @@ Now write the answer following the structure above.
 
 
 def answer_question(question: str) -> str:
-    """
-    Convenience wrapper: call this function from your UI / notebook.
-
-    Example:
-        response = answer_question("What is the non-compete clause in my contract?")
-    """
     chain = get_rag_chain()
     return chain.invoke(question)
 
 
-# ============================================================
-#  OPTIONAL: SIMPLE MANUAL TEST
-# ============================================================
-
 if __name__ == "__main__":
-    # Example manual tests (you can comment these out in production)
-
-    # General legal question → CUAD QA DB
     q1 = "What is a typical non-compete clause in a SaaS agreement?"
     print("Q1:", q1)
     print("A1:", answer_question(q1))
     print("\n" + "=" * 80 + "\n")
 
-    # Contract-specific question → USER DB
-    # (Requires that you have already built USER_FAISS_DIR separately)
     q2 = "What does the termination clause in my contract say?"
     print("Q2:", q2)
     print("A2:", answer_question(q2))

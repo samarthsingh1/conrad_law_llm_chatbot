@@ -354,7 +354,7 @@ def retrieve_docs(query: str, k: int = 6):
     if _looks_like_generic_legal(q):
         print("🟩 Routed to CUAD legal QA DB (lexical rule)")
         kb_db = load_cuad_db()
-        return [], kb_db.max_marginal_relevance_search(q, k=k)
+        return [], kb_db.similarity_search(q, k=k)
 
     # 2) LLM router for ambiguous cases
     decision = llm_route_decision(q)

@@ -1,6 +1,7 @@
 import chainlit as cl
 from pathlib import Path
 
+
 from rag_backend import (
     get_rag_chain,
     process_pdf_and_add_to_vector_db,
@@ -16,15 +17,15 @@ rag_chain = get_rag_chain()
 async def start_chat():
     await cl.Message(
         content=(
-            "**📑 Contract RAG Assistant**\n\n"
+            "*📑 Contract RAG Assistant*\n\n"
             "Upload a contract PDF, then ask questions like:\n"
-            "- *What does Clause 5 say?*\n"
-            "- *Explain confidentiality in my agreement.*\n"
-            "- *What is the governing law section?*\n\n"
-            "**Routing Logic:**\n"
-            "- If your question mentions **clause**, **section**, **agreement**, **my contract**, etc →\n"
-            "  It queries your *USER contract vector DB*.\n"
-            "- Otherwise → It queries the **CUAD Legal Knowledge Base**.\n"
+            "- What does Clause 5 say?\n"
+            "- Explain confidentiality in my agreement.\n"
+            "- What is the governing law section?\n\n"
+            "*Routing Logic:*\n"
+            "- If your question mentions *clause, **section, **agreement, **my contract*, etc →\n"
+            "  It queries your USER contract vector DB.\n"
+            "- Otherwise → It queries the *CUAD Legal Knowledge Base*.\n"
         )
     ).send()
 
@@ -41,7 +42,7 @@ async def on_message(message: cl.Message):
                 file_name = element.name or Path(pdf_path).name
 
                 await cl.Message(
-                    content=f"📄 Upload received: **{file_name}**\nExtracting clauses..."
+                    content=f"📄 Upload received: *{file_name}*\nExtracting clauses..."
                 ).send()
 
                 await process_pdf_and_add_to_vector_db(pdf_path)
@@ -50,7 +51,7 @@ async def on_message(message: cl.Message):
 
                 await cl.Message(
                     content=(
-                        f"✅ **{file_name}** processed successfully.\n"
+                        f"✅ *{file_name}* processed successfully.\n"
                         "You may now ask questions about your contract."
                     )
                 ).send()

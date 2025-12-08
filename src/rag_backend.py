@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import re
 
 # -------- Prompts--------
@@ -30,7 +31,10 @@ CUAD_FAISS_DIR = BASE_DIR / "vectorstores" / "cuad_faiss_index"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 LLM_MODEL = "llama-3.3-70b-versatile"
-GROQ_API_KEY = "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"  # replace with your real key
+# You can use a *smaller* model for routing below if you like.
+ROUTER_MODEL = LLM_MODEL  # e.g. "llama-3.1-8b-instant" if available on Groq
+
+GROQ_API_KEY = "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" 
 
 # ============================================================
 #  GLOBAL STATE
@@ -38,50 +42,64 @@ GROQ_API_KEY = "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"  # rep
 
 embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
 
-user_db = None
-cuad_db = None
+user_db = None     # FAISS index for user-uploaded contracts
+cuad_db = None     # FAISS index for CUAD QA pairs
 
 CURRENT_UPLOADED_CONTRACT = None
 
 
-
-# ============================================================
-#  DEVELOPMENT TOOL (DELETE BEFORE PRODUCTION)
-# ============================================================
-
 def format_top_k_clauses(retrieved_docs, k=5):
     """
     Utility for Chainlit debugging.
-    Shows the top-k retrieved chunks with metadata.
+    Shows the top-k retrieved items with metadata,
+    and distinguishes between CUAD QA and user clauses.
     """
     if not retrieved_docs:
-        return " No retrieved clauses."
+        return " No retrieved items."
 
     retrieved_docs = retrieved_docs[:k]
 
-    md = "### 🔎 Top Retrieved Clauses\n\n"
+    md = "## 🔎 Top Retrieved Items\n\n"
 
     for i, doc in enumerate(retrieved_docs, start=1):
         meta = doc.metadata or {}
-        source = "USER CONTRACT" if meta.get("contract_name") else "CUAD KB"
-        clause_no = meta.get("clause_number", "N/A")
+
+        # Identify source
+        if meta.get("contract_name"):
+            source = "USER CONTRACT"
+        else:
+            source = "CUAD QA"
+
         chunk_id = meta.get("chunk_id", "N/A")
 
-        preview = doc.page_content[:200].replace("\n", " ") + "..."
+        # CUAD metadata
+        q = meta.get("question", doc.page_content)
+        a = meta.get("answer", None)
+        ctx = meta.get("context", None)
 
-        md += (
-            f"**Result {i}**\n"
-            f"- **Source:** `{source}`\n"
-            f"- **Clause Number:** `{clause_no}`\n"
-            f"- **Chunk ID:** `{chunk_id}`\n"
-            f"- **Text Preview:** {preview}\n\n"
-        )
+        # USER contract metadata
+        clause_no = meta.get("clause_number", None)
+
+        md += f"### Result {i}\n"
+        md += f"- **Source**: {source}\n"
+        md += f"- **Chunk ID**: {chunk_id}\n"
+
+        # USER CONTRACT formatting
+        if source == "USER CONTRACT":
+            preview = doc.page_content[:200].replace("\n", " ")
+            md += f"- **Clause Number**: {clause_no}\n"
+            md += f"- **Text Preview**: {preview}...\n\n"
+
+        else:  # CUAD QA formatting
+            md += f"- **Question**: {q}\n"
+            if a:
+                md += f"- **Answer**: {a}\n"
+            if ctx:
+                clean_ctx = ctx[:200].replace("\n", " ")
+                md += f"- **Context (excerpt)**: {clean_ctx}...\n"
+            md += "\n"
 
     return md
-
-# ============================================================
-# LOAD VECTOR DATABASES
-# ============================================================
 
 def load_user_db():
     """Load the user-uploaded contract FAISS DB."""
@@ -95,17 +113,23 @@ def load_user_db():
         )
     return user_db
 
-
 def load_cuad_db():
-    """Load the CUAD legal knowledge base FAISS DB."""
+    """
+    Load the CUAD QA-based FAISS DB.
+    """
     global cuad_db
-    if cuad_db is None:
-        print("📚 Loading CUAD FAISS DB...")
+    if cuad_db is not None:
+        return cuad_db
+
+    if CUAD_FAISS_DIR.exists():
+        print("📚 Loading CUAD QA FAISS DB...")
         cuad_db = FAISS.load_local(
             folder_path=str(CUAD_FAISS_DIR),
             embeddings=embeddings,
             allow_dangerous_deserialization=True
         )
+    else:
+        print("⚠️ CUAD FAISS index not found")
     return cuad_db
 
 
@@ -116,11 +140,11 @@ def load_cuad_db():
 def extract_numbered_clauses(text: str):
     """
     Extract clauses based on patterns like:
-    1
-    1.1
-    1.1.1
-    2
-    2.4
+      1
+      1.1
+      1.1.1
+      2
+      2.4
     """
     pattern = r"(?m)^(?P<num>\d+(\.\d+)*)(?P<body>[\s\S]*?)(?=^\d+(\.\d+)*|\Z)"
     clauses = []
@@ -134,7 +158,10 @@ def extract_numbered_clauses(text: str):
 
 
 def add_contract_pdf_to_vectorstore(pdf_path: str, contract_name: str):
-    """Parse PDF into clauses → store into FAISS user DB."""
+    """
+    Parse a user-uploaded contract PDF into numbered clauses,
+    and add them to the USER FAISS vectorstore.
+    """
     loader = PyPDFLoader(pdf_path)
     pages = loader.load()
     full_text = "\n".join(p.page_content for p in pages)
@@ -170,40 +197,205 @@ async def process_pdf_and_add_to_vector_db(pdf_path: str):
 
 
 # ============================================================
-#  ROUTING LOGIC (UNCHANGED - AS YOU REQUESTED)
+#  ROUTING LOGIC (HEURISTICS + LLM ROUTER)
 # ============================================================
 
-CONTRACT_KEYWORDS = [
-    "my contract", "this contract", "uploaded contract",
-    "clause", "section", "agreement", "provision", "term",
-    "in the contract", "in my agreement"
+# Strong indicators that the user is asking about THEIR uploaded contract
+CONTRACT_STRONG_KEYWORDS = [
+    # explicit contract/agreement references
+    "my contract",
+    "this contract",
+    "our contract",
+    "my agreement",
+    "this agreement",
+    "our agreement",
+    "uploaded contract",
+    "uploaded agreement",
+    "my nda",
+    "this nda",
+    "my lease",
+    "this lease",
+
+    # generic doc/file references that usually mean the uploaded PDF
+    "this document",
+    "in this document",
+    "this file",
+    "this pdf",
+    "in the uploaded file",
+    "in the uploaded document",
+]
+
+# Generic legal question phrasing (no explicit reference to user's contract)
+GENERIC_QUESTION_PREFIXES = [
+    "what is",
+    "what are",
+    "explain",
+    "define",
+    "how does",
+    "how do",
+    "typically",
+    "in general",
+    "usually",
 ]
 
 
-def is_contract_question(query: str):
-    q = query.lower()
-    return any(kw in q for kw in CONTRACT_KEYWORDS)
+DEICTIC_CONTRACT_HINTS = [
+    " here",
+    " here?",
+    " here.",
+    " in this clause",
+    " in this section",
+    " in this document",
+    " in this agreement",
+    " in this contract",
+]
+
+def _looks_like_contract_specific(q: str) -> bool:
+    q = q.lower()
+
+    # 1) Strong keywords: "my contract", "this agreement", etc.
+    if any(kw in q for kw in CONTRACT_STRONG_KEYWORDS):
+        return True
+
+    # 2) Deictic hints like "here", "in this clause" WHEN a contract is uploaded
+    if CURRENT_UPLOADED_CONTRACT and any(hint in q for hint in DEICTIC_CONTRACT_HINTS):
+        return True
+
+    # 3) Patterns like "clause 5", "section 3.2" together with "my/this/our"
+    has_clause_ref = bool(
+        re.search(r"\bclause\s+\d+(\.\d+)*", q) or
+        re.search(r"\bsection\s+\d+(\.\d+)*", q)
+    )
+    has_possessive = any(w in q for w in ["my ", "this ", "our "])
+
+    if has_clause_ref and has_possessive:
+        return True
+
+    return False
 
 
-def retrieve_docs(query: str, k=6):
+
+def _looks_like_generic_legal(q: str) -> bool:
+    ql = q.lower()
+
+    # Generic definitional question
+    starts_like_def = any(
+        ql.startswith(p) or f" {p} " in ql for p in GENERIC_QUESTION_PREFIXES
+    )
+
+    if starts_like_def and not any(kw in ql for kw in CONTRACT_STRONG_KEYWORDS):
+        return True
+
+    return False
+
+
+def _create_router_llm():
+    """Small LLM used only for routing when heuristics are ambiguous."""
+    return ChatGroq(
+        temperature=0,
+        groq_api_key=GROQ_API_KEY,
+        model=ROUTER_MODEL,
+    )
+
+
+def llm_route_decision(query: str) -> str:
     """
-    ROUTING LOGIC — RETAINED EXACTLY AS YOU REQUESTED.
-
-    If question references contract → search USER DB.
-    Else → search CUAD DB.
+    Use an LLM to classify the query as:
+      - 'contract' -> user uploaded contract
+      - 'general'  -> generic legal / CUAD
+      - 'both'     -> use both sources
     """
-    if is_contract_question(query):
-        print("🟦 Routed to USER contract DB")
+    router_llm = _create_router_llm()
+
+    prompt = f"""
+You are a routing classifier for a legal Q&A assistant.
+
+Decide whether the USER is asking about:
+- their SPECIFIC uploaded contract (label: contract),
+- a GENERAL legal question (label: general), or
+- BOTH (label: both).
+
+Guidelines:
+- Use 'contract' if they talk about "my contract", "this agreement", "this document",
+  specific clause numbers in their document, etc.
+- Use 'general' if they ask what something means in general, or typical legal meaning,
+  without referencing their specific contract.
+- Use 'both' if they clearly mix both (e.g. "in my contract and in general, how is X handled?").
+
+Return ONLY one word: contract, general, or both.
+
+User question: {query}
+
+Answer with a single word:
+"""
+
+    resp = router_llm.invoke(prompt)
+    label = resp.content.strip().lower()
+
+    if "contract" in label:
+        return "contract"
+    if "both" in label:
+        return "both"
+    if "general" in label:
+        return "general"
+
+    # Fallback
+    return "general"
+
+
+def retrieve_docs(query: str, k: int = 6):
+    """
+    ROUTING LOGIC (IMPROVED):
+
+    1. Heuristics first (cheap):
+       - If clearly contract-specific → USER DB only.
+       - If clearly generic legal → CUAD DB only.
+    2. If ambiguous → LLM router:
+       - 'contract' -> USER DB
+       - 'general'  -> CUAD DB
+       - 'both'     -> both DBs (split k)
+    """
+    q = query.strip()
+
+    # 1) Heuristic rules
+    if _looks_like_contract_specific(q):
+        print("🟦 Routed to USER contract DB (lexical rule)")
         user_db = load_user_db()
-        return user_db.similarity_search(query, k=k), []
+        return user_db.similarity_search(q, k=k), []
 
-    print("🟩 Routed to CUAD legal KB DB")
+    if _looks_like_generic_legal(q):
+        print("🟩 Routed to CUAD legal QA DB (lexical rule)")
+        kb_db = load_cuad_db()
+        return [], kb_db.similarity_search(q, k=k)
+
+    # 2) LLM router for ambiguous cases
+    decision = llm_route_decision(q)
+    print(f"🧠 LLM router decision: {decision}")
+
+    if decision == "contract":
+        print("🟦 Routed to USER contract DB (LLM router)")
+        user_db = load_user_db()
+        return user_db.similarity_search(q, k=k), []
+
+    if decision == "general":
+        print("🟩 Routed to CUAD legal QA DB (LLM router)")
+        kb_db = load_cuad_db()
+        return [], kb_db.similarity_search(q, k=k)
+
+    # BOTH
+    print("🟪 Routed to BOTH USER and CUAD DBs (LLM router)")
+    user_db = load_user_db()
     kb_db = load_cuad_db()
-    return [], kb_db.similarity_search(query, k=k)
+    k_user = max(2, k // 2)
+    k_kb = max(2, k - k_user)
+    return (
+        user_db.similarity_search(q, k=k_user),
+        kb_db.similarity_search(q, k=k_kb),
+    )
 
 
 # ============================================================
-#  LLM SETUP
+#  LLM SETUP (MAIN ANSWER MODEL)
 # ============================================================
 
 def _create_llm():
@@ -262,4 +454,3 @@ INSTRUCTIONS:
             "question": q,
         }
 
-    return prepare_context | prompt | llm | StrOutputParser()

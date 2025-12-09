@@ -22,7 +22,7 @@ from langchain_core.output_parsers import StrOutputParser
 # ============================================================
 #  GLOBAL CONFIG
 # ============================================================
-
+##ADD YOUR PERSONAL PARENT DIRECTORY TILL THE NOTEBOOK FOLDER
 BASE_DIR = Path(__file__).resolve().parents[1] / "/Users/kanishkkaul/Desktop/NLP_Project/conrad_law_llm_chatbot/notebook"
 
 USER_FAISS_DIR = BASE_DIR / "vectorstores" / "user_contracts_faiss"
@@ -34,7 +34,7 @@ LLM_MODEL = "llama-3.3-70b-versatile"
 # You can use a *smaller* model for routing below if you like.
 ROUTER_MODEL = LLM_MODEL  # e.g. "llama-3.1-8b-instant" if available on Groq
 
-GROQ_API_KEY = "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" 
+GROQ_API_KEY = "" #Add Groq API key here
 
 # ============================================================
 #  GLOBAL STATE
